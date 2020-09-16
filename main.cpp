@@ -1,92 +1,110 @@
 #define _USE_MATH_DEFINES
 #include <cmath>    // M_Pi
-#include <iostream> // std::cout
 #include <complex>
+#include <iostream> // std::cout
 #include "Eigen/Dense"
 
-// Use literal suffix i (or if, il) to denote an imaginary number
-// Why does "using std::literals::complex_literals::operator""i;" throw a compiler warning?
 using namespace std::literals::complex_literals;
-using complexd = std::complex<double>; // easier to read, and if I need to change to e.g. long double through it will be easier
-using std::cout;
+//using std::literals::complex_literals::operator""i; // Use literal suffix i (or if, il) to denote an imaginary number
+using complexd = std::complex<double>;              // easier to read, and if I need to change to e.g. long double through it will be easier
 using Eigen::Matrix2cd;
 using Eigen::Matrix4cd;
+using std::cout;
+
+// Define parameters for the normal state
+const double t1  = 1.0;
+const double t2  = 0.8*t1;
+const double t3  = 0.1*t1;
+const double mu  = t1;
+const double soc = 0.25*t1;
+
+// Define interaction strengths
+const double lambda1 = -0.2;
+const double lambda2 = -0.265;
+const double lambda3 =  0.03;
+
+// Define calculation parameters
+const int    Nk_gap   = 500;
+const int    Nk_hall  = 5000;
+const double T1       = 0.0001;
+const double T2       = 0.02;
+const int    NT       = 200;
+const double freq1    = 0.01;
+const double freq2    = 3.0;
+const int    Nfreq    = 300;
+const double zeroplus = 0.001;
 
 struct DeltaWrap
 {
     complexd val[2];
 };
 
-class PauliMatrixGen
+struct HallParameters
 {
-public:
-    Eigen::Matrix2cd makepauli0()
-    {
-        return Eigen::Matrix2cd::Identity();
-    }
-    Eigen::Matrix2cd makepauli1()
-    {
-        Eigen::Matrix2cd pauli1;
-        pauli1 << 0, 1, 1, 0;
-        return pauli1;
-    }
-    Eigen::Matrix2cd makepauli2()
-    {
-        Eigen::Matrix2cd pauli2;
-        pauli2 << 0, -1i, 1i, 0;
-        return pauli2;
-    }
-    Eigen::Matrix2cd makepauli3()
-    {
-        Eigen::Matrix2cd pauli3;
-        pauli3 << 1, 0, 0, -1;
-        return pauli3;
-    }
+    int    Nmax       {0};	///< This is the number of lattice points per dimension
+	double temp       {0};	///< This is the temperature
+	int    omegaMax   {0};	///< This is the maximum frequency (of light) to consider
+	double deltaOmega {0};	///< This is the spacing between frequencies
+	double zeroplus   {0};	///< This is the numerical approximation of the positive infintessimal in the analytic continuation
 };
 
-int hallconductivity(DeltaWrap delta0optim, int Nmax, double temp, int omegamax, double deltaomega, double zeroplus);
-DeltaWrap deltaconversion(DeltaWrap delta);
-Matrix4cd kron(Matrix2cd A, Matrix2cd B);
-
-// Define parameters for the normal state
-// Consider other options other than making these global
-const double t1 {1.0};
-const double t2 {0.8*t1};
-const double t3 {0.1*t1};
-const double mu {t1};
-const double soc{0.25*t1};
-
-// Define interaction strengths
-// Consider other options other than making these global
-const double lambda1 {-0.2};
-const double lambda2 {-0.265};
-const double lambda3 {0.03};
-
-int main()
+class PauliMatrixGen
 {
-    DeltaWrap delta0optim; // in the future this will be determined (as a function of T), but for now I will assign it a value
-    delta0optim.val[0] = 0.2;
-    delta0optim.val[1] = 0.05;
+private:
+    Matrix2cd makeMatrix(const std::initializer_list<complexd>& args)
+    {
+        Matrix2cd matrix;
+        for (const complexd &arg : args)
+            matrix << arg;
+        return matrix;
+    }
 
-    // call Hall conductivity function
+public:
+    Matrix2cd makePauli0() { return Matrix2cd::Identity(); }
+    Matrix2cd makePauli1() { return makeMatrix({0,  1,  1,  0}); }
+    Matrix2cd makePauli2() { return makeMatrix({0, -1i, 1i, 0}); }
+    Matrix2cd makePauli3() { return makeMatrix({1,  0,  0, -1}); }
+};
 
-    return 0;
+DeltaWrap DeltaConversion(const DeltaWrap& delta)
+{
+    DeltaWrap deltaConverted;
+    deltaConverted.val[0] = delta.val[0]+delta.val[1]*lambda3/lambda2;
+    deltaConverted.val[1] = delta.val[1]+delta.val[0]*lambda3/lambda1;
+    return deltaConverted;
 }
 
-DeltaWrap deltaconversion(DeltaWrap delta)
+Matrix4cd kron(Matrix2cd A, Matrix2cd B) // kron is the Kronecker product between two matrices
 {
-    DeltaWrap delta_converted;
-    delta_converted.val[0] = delta.val[0]+delta.val[1]*lambda3/lambda2;
-    delta_converted.val[1] = delta.val[1]+delta.val[0]*lambda3/lambda1;
-    return delta_converted;
+    // implemented using formula from mathworld (https://mathworld.wolfram.com/KroneckerProduct.html)
+    // using the notation used there (p,q,i,j,k,l)
+
+    int p {2};
+    int q {2};
+
+    Matrix4cd C;
+
+    for (int i=1;i<=2;i++)
+        for (int j=1;j<=2;j++)
+            for (int k=1;k<=2;k++)
+                for (int l=1;l<=2;l++)
+                {
+                    // indexing here starts from 0
+                    // but indexing in the formula starts from 1
+                    // so I subtract 1 from each index
+                    C(p*(i-1)+k-1,q*(j-1)+l-1) = A(i-1,j-1) * B(k-1,l-1);
+                }
+
+    return C;
 }
 
-int hallconductivity(DeltaWrap delta0optim, int Nmax, double temp, int omegamax, double deltaomega, double zeroplus)
+int HallConductivity(const DeltaWrap& delta0optim, HallParameters& hall)
 {
-    // TODO: INITIALIZE ARRAY TO STORE HALL CONDUCTIVITY (USE STD::VECTOR?)
-    // Bear in mind you can't return an array
+    // TODO: INITIALIZE ARRAY TO STORE HALL CONDUCTIVITY
+
+    const int &Nmax = hall.Nmax; // do for other variables as well
     
-    for (int nx=Nmax/2; nx<Nmax; ++nx) {
+    for (int nx=Nmax/2; nx<Nmax; ++nx)
         for (int ny=Nmax/2; ny<Nmax; ++ny) {
 
             // calculate momentum values
@@ -98,10 +116,10 @@ int hallconductivity(DeltaWrap delta0optim, int Nmax, double temp, int omegamax,
 
             // make Pauli matrices
             PauliMatrixGen p;
-            Eigen::Matrix2cd pauli0 {p.makepauli0()};
-            Eigen::Matrix2cd pauli1 {p.makepauli1()};
-            Eigen::Matrix2cd pauli2 {p.makepauli2()};
-            Eigen::Matrix2cd pauli3 {p.makepauli3()};
+            Eigen::Matrix2cd pauli0 {p.makePauli0()};
+            Eigen::Matrix2cd pauli1 {p.makePauli1()};
+            Eigen::Matrix2cd pauli2 {p.makePauli2()};
+            Eigen::Matrix2cd pauli3 {p.makePauli3()};
 
             // construct normal state Hamiltonian
             // these are all real-valued
@@ -121,7 +139,7 @@ int hallconductivity(DeltaWrap delta0optim, int Nmax, double temp, int omegamax,
             Matrix4cd Vy {v00y*kron(pauli0,pauli0) + v10y*kron(pauli0,pauli1) + v30y*kron(pauli0,pauli3)};
             
             // construct pairing potential
-            DeltaWrap delta0optim_converted = deltaconversion(delta0optim);
+            DeltaWrap delta0optim_converted = DeltaConversion(delta0optim);
             complexd d01 = delta0optim_converted.val[0]*(sin(kx)+1i*sin(ky));
             complexd d31 = delta0optim_converted.val[1]*(sin(kx)-1i*sin(ky));
 
@@ -138,38 +156,17 @@ int hallconductivity(DeltaWrap delta0optim, int Nmax, double temp, int omegamax,
 
             // TODO: PERFORM THE LOOP OVER MATSUBARA FREQUENCIES
         }
-    }
 
     return 0; // meaningless for now
 }
 
-Matrix4cd kron(Matrix2cd A, Matrix2cd B)
+int main()
 {
-    // implemented using formula from mathworld (https://mathworld.wolfram.com/KroneckerProduct.html)
-    // using the notation used there (p,q,i,j,k,l)
+    DeltaWrap delta0optim; // in the future this will be determined (as a function of T), but for now I will assign it a value
+    delta0optim.val[0] = 0.2;
+    delta0optim.val[1] = 0.05;
 
-    int p {2};
-    int q {2};
+    // call Hall conductivity function
 
-    Matrix4cd C;
-
-    for (int i=1;i<=2;i++)
-    {
-        for (int j=1;j<=2;j++)
-        {
-            for (int k=1;k<=2;k++)
-            {
-                for (int l=1;l<=2;l++)
-                {
-                    // indexing here starts from 0
-                    // but indexing in the formula starts from 1
-                    // so I subtract 1 from each index
-                    C(p*(i-1)+k-1,q*(j-1)+l-1) = A(i-1,j-1) * B(k-1,l-1);
-                }
-            }
-        }
-    }
-
-    return C;
-
+    return 0;
 }
