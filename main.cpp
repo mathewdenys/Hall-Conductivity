@@ -2,6 +2,8 @@
 #include <iostream> // std::cout
 #include <cmath>    // M_Pi, exp
 #include <array>    // std::array
+#include <fstream>  // std::ofstream
+#include <sstream>  // std::stringstream
 #include <complex>
 #include "Eigen/Dense"
 
@@ -25,13 +27,13 @@ const double lambda2 = -0.265;  // interaction strength in the 31 channel
 const double lambda3 =  0.03;   // inter-channel interaction strength
 
 // Define calculation parameters
-const int    Nk_gap    = 4;
-const int    Nk_hall   = 4;
 const double T1        = 0.0001;
 const double T2        = 0.02;
 const int    NT        = 200;
+const int    Nk_gap    = 10;
+const int    Nk_hall   = 10;
+const int    Nf        = 150;
 const double deltaFreq = 0.01;
-const int    Nfreq     = 5;
 const double zeroPlus  = 0.001;
 
 struct DeltaWrap
@@ -41,10 +43,10 @@ struct DeltaWrap
 
 struct HallParameters // Parameters to be passed to the HallConductivity() function.
 {
-    int    Nk         {};	// The number of lattice points per dimension
 	double temp       {};	// The temperature
+    int    Nk         {};	// The number of lattice points per dimension
+    int    Nf         {};   // The number of frequencies to evaluate the Hall conductivity at
 	double deltaFreq  {};	// The spacing between frequencies
-    int    Nfreq      {};   // The number of frequencies to evaluate the Hall conductivity at
 	double zeroPlus   {};	// The numerical approximation of the positive infintessimal in the analytic continuation
 };
 
@@ -97,7 +99,7 @@ Matrix4cd kron(Matrix2cd A, Matrix2cd B) // The Kronecker product between two ma
     return C;
 }
 
-void HallConductivity(std::array<complexd,Nfreq>& hallOut, const DeltaWrap& delta0optim, HallParameters& params)
+void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0optim, HallParameters& params)
 {
     // local variables for the HallParameters that are used more than once
     const int    &N    = params.Nk;
@@ -152,14 +154,9 @@ void HallConductivity(std::array<complexd,Nfreq>& hallOut, const DeltaWrap& delt
             // calculate eigenvalues and eigenvectors of BdG Hamiltonian
             Eigen::ComplexEigenSolver<Matrix4cd> ces;
             ces.compute(HBdg); // column k of .eigenvectors() corresponds to the kth .eigenvalue()
-            
-            std::cout<<1<<params.Nfreq<<'\n';
 
-            for (int freqInd = 0; freqInd < params.Nfreq; freqInd++)
+            for (int freqInd = 0; freqInd < params.Nf; freqInd++)
             {
-                
-            std::cout<<2<<'\n';
-            
                 complexd omega = (freqInd+1)*params.deltaFreq + 1i*params.zeroPlus;
                 for (int i = 0; i < 4; i++)
                 {
@@ -171,8 +168,8 @@ void HallConductivity(std::array<complexd,Nfreq>& hallOut, const DeltaWrap& delt
                         Vector4cd evecj = ces.eigenvectors().col(j);
                         hallOut[freqInd] += 2i*imag(eveci.dot(Vx*evecj) * evecj.dot(Vy*eveci))
                                              * (tanh(evali/(2*temp))-tanh(evalj/(2*temp)))
-                                            / ( real(omega)*(evali - evalj + omega) )
-                                            * bzdiagonal * 8.0 * 2.0 /(8i*pow(N,2)); // x8 for BZ summation; x2 for each sector; divide by prefactor
+                                             / ( real(omega)*(evali - evalj + omega) )
+                                             * bzdiagonal * 8.0 * 2.0 /(8i*pow(N,2)); // x8 for BZ summation; x2 for each sector; divide by prefactor
                     }
                 }
             }
@@ -181,25 +178,54 @@ void HallConductivity(std::array<complexd,Nfreq>& hallOut, const DeltaWrap& delt
 
 int main()
 {
-    // define pairing potential. In the future this will be calculated
+    // Define pairing potential. In the future this will be calculated
     DeltaWrap delta0optim;
     delta0optim.val[0] = 0.2;
     delta0optim.val[1] = 0.05;
 
+    // Set up parameters for the calculation
     HallParameters params;
-    params.Nk = Nk_hall;
     params.temp = T1;
+    params.Nk = Nk_hall;
+    params.Nf = Nf;
     params.deltaFreq = deltaFreq;
-    params.Nfreq = Nfreq;
     params.zeroPlus = zeroPlus;
 
-    std::array<complexd,Nfreq> hall {}; // initialize array to store the Hall conductivity
-
+    // Calculate Hall conductivity
+    std::array<complexd,Nf> hall {}; // initialize array to store the Hall conductivity
     HallConductivity(hall, delta0optim, params);
 
-    std::cout<<"\nhall after calling HallConductivity():\n"; // todo: rather than printing result, plot / save to file
-    for (int i = 0; i < Nfreq; i++)
-        std::cout << hall[i]<<std::endl;
+    // Name the file to write the data to
+    std::stringstream ss;
+    ss  << "hall_T=" << params.temp
+        << "_Nk=" << params.Nk
+        << "_Nf=" << params.Nf
+        << "_deltaFreq=" << params.deltaFreq
+        << "_zeroPlus=" << params.zeroPlus
+        << ".csv";
+    std::string fileName;
+    ss >> fileName;
+
+    // Save data to file (file will be overwritten)
+    std::ofstream outFile {fileName};
+
+    if (!outFile)
+    {
+        std::cerr << fileName <<" could not be opened for writing";
+        return 1;
+    }
+
+    int counter = 0;
+    for (complexd cnum : hall)
+    {
+        outFile << counter*params.deltaFreq << ","  // column 1: the frequency
+                << real(cnum) << ","                // column 2: real part of Hall the conductivity
+                << imag(cnum) <<"\n";               // column 3: imaginary part of the Hall conductivity
+        counter++;
+    }
+
+    outFile.close();
+    std::cout << "Hall conductivity data has been saved to " << fileName;
 
     return 0;
 }
