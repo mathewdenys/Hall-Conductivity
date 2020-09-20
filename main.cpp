@@ -78,23 +78,18 @@ DeltaWrap DeltaConversion(const DeltaWrap& delta)
 Matrix4cd kron(Matrix2cd A, Matrix2cd B) // The Kronecker product between two matrices
 {
     // implemented using formula from mathworld (https://mathworld.wolfram.com/KroneckerProduct.html)
-    // using the notation used there (p,q,i,j,k,l)
+    // using the notation used there, but starting indexing from 0 rather than 1
 
     int p {2};
     int q {2};
 
     Matrix4cd C;
 
-    for (int i=1;i<=2;i++)
-        for (int j=1;j<=2;j++)
-            for (int k=1;k<=2;k++)
-                for (int l=1;l<=2;l++)
-                {
-                    // indexing here starts from 0
-                    // but indexing in the formula starts from 1
-                    // so I subtract 1 from each index
-                    C(p*(i-1)+k-1,q*(j-1)+l-1) = A(i-1,j-1) * B(k-1,l-1);
-                }
+    for (int i=0;i<2;i++)
+        for (int j=0;j<2;j++)
+            for (int k=0;k<2;k++)
+                for (int l=0;l<2;l++)
+                    C(p*i+k,q*j+l) = A(i,j) * B(k,l);
 
     return C;
 }
