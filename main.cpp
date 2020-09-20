@@ -36,20 +36,6 @@ const int    Nf        = 150;
 const double deltaFreq = 0.01;
 const double zeroPlus  = 0.001;
 
-struct DeltaWrap
-{
-    complexd val[2];
-};
-
-struct HallParameters // Parameters to be passed to the HallConductivity() function.
-{
-	double temp       {};	// The temperature
-    int    Nk         {};	// The number of lattice points per dimension
-    int    Nf         {};   // The number of frequencies to evaluate the Hall conductivity at
-	double deltaFreq  {};	// The spacing between frequencies
-	double zeroPlus   {};	// The numerical approximation of the positive infintessimal in the analytic continuation
-};
-
 class PauliMatrixGen
 {
 private: // fixed this so it actually works. But can I make makeMatrix() neater?
@@ -67,13 +53,25 @@ public:
     Matrix2cd makePauli3() { return makeMatrix(1,  0,  0, -1); }
 };
 
-DeltaWrap DeltaConversion(const DeltaWrap& delta)
+struct DeltaWrap
 {
-    DeltaWrap deltaConverted;
-    deltaConverted.val[0] = delta.val[0]+delta.val[1]*lambda3/lambda2;
-    deltaConverted.val[1] = delta.val[1]+delta.val[0]*lambda3/lambda1;
-    return deltaConverted;
-}
+    double val[2]; // the pairing potential can be real valued with no loss of generality
+};
+
+struct FreeEnergyParameters
+{
+    double temp     {}; // The temperature
+    int Nk          {};	// The number of lattice points per dimension
+};
+
+struct HallParameters // Parameters to be passed to the HallConductivity() function.
+{
+    double temp       {};	// The temperature
+    int    Nk         {};	// The number of lattice points per dimension
+    int    Nf         {};   // The number of frequencies to evaluate the Hall conductivity at
+    double deltaFreq  {};	// The spacing between frequencies
+    double zeroPlus   {};	// The numerical approximation of the positive infintessimal in the analytic continuation
+};
 
 Matrix4cd kron(Matrix2cd A, Matrix2cd B) // The Kronecker product between two matrices
 {
@@ -94,8 +92,68 @@ Matrix4cd kron(Matrix2cd A, Matrix2cd B) // The Kronecker product between two ma
     return C;
 }
 
-void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0optim, HallParameters& params)
+DeltaWrap DeltaConversion(const DeltaWrap& delta) // Converts variational parameters to true pairing potentials
 {
+    DeltaWrap deltaConverted;
+    deltaConverted.val[0] = delta.val[0]+delta.val[1]*lambda3/lambda2;
+    deltaConverted.val[1] = delta.val[1]+delta.val[0]*lambda3/lambda1;
+    return deltaConverted;
+}
+
+double FreeEnergy(const DeltaWrap& delta0optim, FreeEnergyParameters& params) // Calculate the Helmholtz free energy for a given pairing state
+{ // Note that delta0optim passed in here is *not* the pairing potential, but the "unconverted" variational parameters
+    double temp = params.temp;
+    int    N    = params.Nk;
+
+    double freeEnergySum {}; // to store the momentum dependent part of free energy
+
+    // sum over only one eighth of the brillouin zone (note upper limit in each for loop)
+    for (int nx=N/2; nx<N; ++nx)
+        for (int ny=N/2; ny<=nx; ++ny) 
+        {
+            // calculate momentum values
+            double kx {(2*nx-N+1)*M_PI/N};
+            double ky {(2*ny-N+1)*M_PI/N};
+
+            // don't double count diagonals of the Brillouin zone
+            double bzdiagonal = (nx==ny) ? 0.5 : 1.0;
+
+            // construct normal state Hamiltonian
+            double h00 { -t1*(cos(kx)+cos(ky)) - mu};
+            double h10 {2*t3*(sin(kx)*sin(ky))};
+            double h30 { -t2*(cos(kx)-cos(ky))};
+            double h23 {soc};
+
+            // construct pairing potential (note the pairing potential is converted)
+            complexd d01 = DeltaConversion(delta0optim).val[0]*(sin(kx)+1i*sin(ky));
+            complexd d31 = DeltaConversion(delta0optim).val[1]*(sin(kx)-1i*sin(ky));
+
+            // explicitly construct one sector of the BdG Hamiltonian
+            Matrix4cd HBdg;
+            HBdg << h00+h30, h10-1i*h23, d01+d31, 0,
+                    h10+1i*h23, h00-h30, 0, d01-d31,
+                    std::conj(d01)+std::conj(d31), 0, -h00-h30, -h10+1i*h23,
+                    0, std::conj(d01)-std::conj(d31), -h10-1i*h23, -h00+h30;
+
+            // calculate eigenvalues and eigenvectors of BdG Hamiltonian
+            Eigen::ComplexEigenSolver<Matrix4cd> ces;
+            ces.compute(HBdg,false); // false -> only calculate eigenvalues
+            
+            // sum over positive eigenvalues
+            for (int i=1; i<=4; i++)
+                {
+                    double    evali = real(ces.eigenvalues()[i]);
+                    if (evali > 0) // Eigen does not sort eigenvalues in any particular order
+                        freeEnergySum += (evali + 2*temp*log(1+exp(-evali/temp)))*bzdiagonal;
+                }
+        }
+
+    return -8*freeEnergySum/pow(N,2) - 0.5*(pow(delta0optim.val[0],2)/lambda1 + pow(delta0optim.val[1],2)/lambda2
+                + lambda3/(lambda1*lambda2) * 2 * delta0optim.val[0] * delta0optim.val[1]); 
+}
+
+void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0optim, HallParameters& params)
+{ // Note that delta0optim passed in here *is* the true pairing potential (unlike in FreeEnergy())
     // local variables for the HallParameters that are used more than once
     const int    &N    = params.Nk;
     const int    &temp = params.temp;
