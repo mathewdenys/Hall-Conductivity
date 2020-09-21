@@ -4,10 +4,11 @@
 #include <array>    // std::array
 #include <fstream>  // std::ofstream
 #include <sstream>  // std::stringstream
+#include <algorithm>// std::transform
 #include <complex>
 #include "Eigen/Dense"
 
-using namespace std::literals::complex_literals; // Use literal suffix i (or if, il) to denote an imaginary number
+using namespace std::literals::complex_literals; // use literal suffixes {i, if, il} to denote imaginary numbers
 using complexd = std::complex<double>;
 using Eigen::Matrix2cd;
 using Eigen::Matrix4cd;
@@ -15,9 +16,9 @@ using Eigen::Vector4cd;
 using std::cout;
 
 // Define parameters for the normal state
-const double t1  = 1.0;
-const double t2  = 0.8*t1;
-const double t3  = 0.1*t1;
+const double t1  = 1.0;         // hopping parameter #1
+const double t2  = 0.8*t1;      // hopping parameter #2
+const double t3  = 0.1*t1;      // hopping parameter #3
 const double mu  = t1;          // chemical potential
 const double soc = 0.25*t1;     // spin-orbital coupling strength
 
@@ -38,8 +39,7 @@ const double zeroPlus  = 0.001;
 
 Matrix4cd kron(Matrix2cd A, Matrix2cd B) // The Kronecker product between two matrices
 {
-    // implemented using formula from mathworld (https://mathworld.wolfram.com/KroneckerProduct.html)
-    // using the notation used there, but starting indexing from 0 rather than 1
+    // Using https://mathworld.wolfram.com/KroneckerProduct.html, but starting indexing from 0 rather than 1
 
     int p {2};
     int q {2};
@@ -108,7 +108,7 @@ private:
     double make_v10x(double kx, double ky) { return 2*t3*cos(kx)*sin(ky);}
     double make_v10y(double kx, double ky) { return 2*t3*sin(kx)*cos(ky);}
     double make_v30x(double kx, double ky) { return   t2*sin(kx);}
-    double make_v30y(double kx, double ky) {return   -t2*sin(ky);}
+    double make_v30y(double kx, double ky) { return  -t2*sin(ky);}
     // note that v23x = v23y = 0 in this model
 
 public:
@@ -203,6 +203,10 @@ void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0o
     const int    &N    = params.Nk;
     const int    &temp = params.temp;
     assert(N%2==0 && "N must be divisible by 2 in order to sum over partial Brillouin zone");
+
+    // ensure the Hall conductivity array is set to zero before beginning
+    for (int freqInd = 0; freqInd < params.Nf; freqInd++)
+        hallOut[freqInd] = 0i;
     
     // sum over only one eighth of the brillouin zone (note upper limit in each for loop)
     for (int nx=N/2; nx<N; ++nx)
@@ -238,12 +242,17 @@ void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0o
                         Vector4cd evecj = ces.eigenvectors().col(j);
                         hallOut[freqInd] += 2i*imag(eveci.dot(Vx*evecj) * evecj.dot(Vy*eveci))
                                              * (tanh(evali/(2*temp))-tanh(evalj/(2*temp)))
-                                             / ( real(omega)*(evali - evalj + omega) )
-                                             * bzdiagonal * 8.0 * 2.0 /(8i*pow(N,2)); // x8 for BZ summation; x2 for each sector; divide by prefactor
+                                             / ( real(omega)*(evali - evalj + omega) ) * bzdiagonal; 
                     }
                 }
             }
         }
+
+        std::transform(hallOut.begin(), hallOut.end(), hallOut.begin(),
+                        [&N](complexd& hall) -> complexd
+                            {
+                                return hall*8.0*2.0/(8i*pow(N,2)); // x8 for BZ summation; x2 for each sector; divide by prefactor
+                            }); 
 }
 
 int main()
