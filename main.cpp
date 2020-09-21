@@ -36,43 +36,6 @@ const int    Nf        = 150;
 const double deltaFreq = 0.01;
 const double zeroPlus  = 0.001;
 
-class PauliMatrixGen
-{
-private: // fixed this so it actually works. But can I make makeMatrix() neater?
-    Matrix2cd makeMatrix(const complexd& val00, const complexd& val01, const complexd& val10, const complexd& val11)
-    {
-        Matrix2cd matrix;
-        matrix << val00, val01, val10, val11;
-        return matrix;
-    }
-
-public:
-    Matrix2cd makePauli0() { return Matrix2cd::Identity(); }
-    Matrix2cd makePauli1() { return makeMatrix(0,  1,  1,  0); }
-    Matrix2cd makePauli2() { return makeMatrix(0, -1i, 1i, 0); }
-    Matrix2cd makePauli3() { return makeMatrix(1,  0,  0, -1); }
-};
-
-struct DeltaWrap
-{
-    double val[2]; // the pairing potential can be real valued with no loss of generality
-};
-
-struct FreeEnergyParameters
-{
-    double temp     {}; // The temperature
-    int Nk          {};	// The number of lattice points per dimension
-};
-
-struct HallParameters // Parameters to be passed to the HallConductivity() function.
-{
-    double temp       {};	// The temperature
-    int    Nk         {};	// The number of lattice points per dimension
-    int    Nf         {};   // The number of frequencies to evaluate the Hall conductivity at
-    double deltaFreq  {};	// The spacing between frequencies
-    double zeroPlus   {};	// The numerical approximation of the positive infintessimal in the analytic continuation
-};
-
 Matrix4cd kron(Matrix2cd A, Matrix2cd B) // The Kronecker product between two matrices
 {
     // implemented using formula from mathworld (https://mathworld.wolfram.com/KroneckerProduct.html)
@@ -92,6 +55,101 @@ Matrix4cd kron(Matrix2cd A, Matrix2cd B) // The Kronecker product between two ma
     return C;
 }
 
+struct DeltaWrap
+{
+    double val[2]; // the pairing potential can be real valued with no loss of generality
+};
+
+struct FreeEnergyParameters // Parameters to be passed to the FreeEnergy() function.
+{
+    double temp     {}; // The temperature
+    int Nk          {};	// The number of lattice points per dimension
+};
+
+struct HallParameters // Parameters to be passed to the HallConductivity() function
+{
+    double temp       {};   // The temperature
+    int    Nk         {};   // The number of lattice points per dimension
+    int    Nf         {};   // The number of frequencies to evaluate the Hall conductivity at
+    double deltaFreq  {};   // The spacing between frequencies
+    double zeroPlus   {};   // The numerical approximation of the positive infintessimal in the analytic continuation
+};
+
+class PauliMatrixGen
+{
+private:
+    Matrix2cd makeMatrix(const complexd& val00, const complexd& val01, const complexd& val10, const complexd& val11)
+    {
+        Matrix2cd matrix;
+        matrix << val00, val01, val10, val11;
+        return matrix;
+    }
+
+public:
+    Matrix2cd makePauli0() { return Matrix2cd::Identity(); }
+    Matrix2cd makePauli1() { return makeMatrix(0,  1,  1,  0); }
+    Matrix2cd makePauli2() { return makeMatrix(0, -1i, 1i, 0); }
+    Matrix2cd makePauli3() { return makeMatrix(1,  0,  0, -1); }
+};
+
+class HamiltonianGen
+{
+private:
+    double make_h00(double kx, double ky) {return  -t1*(cos(kx)+cos(ky)) - mu;}
+    double make_h10(double kx, double ky) {return 2*t3*(sin(kx)*sin(ky));}
+    double make_h30(double kx, double ky) {return  -t2*(cos(kx)-cos(ky));}
+    double make_h23(double kx, double ky) {return soc;}
+
+    complexd make_d01(double amplitude, double kx, double ky) {return amplitude*(sin(kx)+1i*sin(ky));}
+    complexd make_d31(double amplitude, double kx, double ky) {return amplitude*(sin(kx)-1i*sin(ky));}
+
+    double make_v00x(double kx, double ky) { return   t1*sin(kx);}
+    double make_v00y(double kx, double ky) { return   t1*sin(ky);}
+    double make_v10x(double kx, double ky) { return 2*t3*cos(kx)*sin(ky);}
+    double make_v10y(double kx, double ky) { return 2*t3*sin(kx)*cos(ky);}
+    double make_v30x(double kx, double ky) { return   t2*sin(kx);}
+    double make_v30y(double kx, double ky) {return   -t2*sin(ky);}
+    // note that v23x = v23y = 0 in this model
+
+public:
+    Matrix4cd make_HBdg(DeltaWrap amplitudes, double kx, double ky) // construct one sector of the BdG Hamiltonian
+    {
+        double h00 = make_h00(kx,ky);
+        double h10 = make_h10(kx,ky);
+        double h30 = make_h30(kx,ky);
+        double h23 = make_h23(kx,ky);
+
+        complexd d01 = make_d01(amplitudes.val[0],kx,ky);
+        complexd d31 = make_d31(amplitudes.val[1],kx,ky);
+
+        Matrix4cd HBdg;
+        HBdg << h00+h30, h10-1i*h23, d01+d31, 0,
+                h10+1i*h23, h00-h30, 0, d01-d31,
+                std::conj(d01)+std::conj(d31), 0, -h00-h30, -h10+1i*h23,
+                0, std::conj(d01)-std::conj(d31), -h10-1i*h23, -h00+h30;
+        
+        return HBdg;
+    }
+
+    Matrix4cd make_Vx(double kx, double ky)
+    {
+        PauliMatrixGen p;
+        Matrix2cd pauli0 {p.makePauli0()};
+        Matrix2cd pauli1 {p.makePauli1()};
+        Matrix2cd pauli3 {p.makePauli3()};
+        return make_v00x(kx,ky)*kron(pauli0,pauli0) + make_v10x(kx,ky)*kron(pauli0,pauli1) + make_v30x(kx,ky)*kron(pauli0,pauli3);
+    }
+
+    Matrix4cd make_Vy(double kx, double ky)
+    {
+        PauliMatrixGen p;
+        Matrix2cd pauli0 {p.makePauli0()};
+        Matrix2cd pauli1 {p.makePauli1()};
+        Matrix2cd pauli3 {p.makePauli3()};
+        return make_v00y(kx,ky)*kron(pauli0,pauli0) + make_v10y(kx,ky)*kron(pauli0,pauli1) + make_v30y(kx,ky)*kron(pauli0,pauli3);
+    }
+};
+
 DeltaWrap DeltaConversion(const DeltaWrap& delta) // Converts variational parameters to true pairing potentials
 {
     DeltaWrap deltaConverted;
@@ -100,7 +158,7 @@ DeltaWrap DeltaConversion(const DeltaWrap& delta) // Converts variational parame
     return deltaConverted;
 }
 
-double FreeEnergy(const DeltaWrap& delta0optim, FreeEnergyParameters& params) // Calculate the Helmholtz free energy for a given pairing state
+double FreeEnergy(const DeltaWrap& delta0optim, FreeEnergyParameters& params) // Returns the Helmholtz free energy for a given pairing state
 { // Note that delta0optim passed in here is *not* the pairing potential, but the "unconverted" variational parameters
     double temp = params.temp;
     int    N    = params.Nk;
@@ -112,28 +170,15 @@ double FreeEnergy(const DeltaWrap& delta0optim, FreeEnergyParameters& params) //
         for (int ny=N/2; ny<=nx; ++ny) 
         {
             // calculate momentum values
-            double kx {(2*nx-N+1)*M_PI/N};
-            double ky {(2*ny-N+1)*M_PI/N};
+            double kx = (2*nx-N+1)*M_PI/N;
+            double ky = (2*ny-N+1)*M_PI/N;
 
             // don't double count diagonals of the Brillouin zone
             double bzdiagonal = (nx==ny) ? 0.5 : 1.0;
 
-            // construct normal state Hamiltonian
-            double h00 { -t1*(cos(kx)+cos(ky)) - mu};
-            double h10 {2*t3*(sin(kx)*sin(ky))};
-            double h30 { -t2*(cos(kx)-cos(ky))};
-            double h23 {soc};
-
-            // construct pairing potential (note the pairing potential is converted)
-            complexd d01 = DeltaConversion(delta0optim).val[0]*(sin(kx)+1i*sin(ky));
-            complexd d31 = DeltaConversion(delta0optim).val[1]*(sin(kx)-1i*sin(ky));
-
-            // explicitly construct one sector of the BdG Hamiltonian
-            Matrix4cd HBdg;
-            HBdg << h00+h30, h10-1i*h23, d01+d31, 0,
-                    h10+1i*h23, h00-h30, 0, d01-d31,
-                    std::conj(d01)+std::conj(d31), 0, -h00-h30, -h10+1i*h23,
-                    0, std::conj(d01)-std::conj(d31), -h10-1i*h23, -h00+h30;
+            // explicitly construct one sector of the BdG Hamiltonian (note the pairing potential is converted)
+            HamiltonianGen h;
+            Matrix4cd HBdg { h.make_HBdg(DeltaConversion(delta0optim),kx,ky) };
 
             // calculate eigenvalues and eigenvectors of BdG Hamiltonian
             Eigen::ComplexEigenSolver<Matrix4cd> ces;
@@ -164,45 +209,17 @@ void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0o
         for (int ny=N/2; ny<=nx; ++ny) 
         {
             // calculate momentum values
-            double kx {(2*nx-N+1)*M_PI/N};
-            double ky {(2*ny-N+1)*M_PI/N};
+            double kx = (2*nx-N+1)*M_PI/N;
+            double ky = (2*ny-N+1)*M_PI/N;
 
             // don't double count diagonals of the Brillouin zone
             double bzdiagonal = (nx==ny) ? 0.5 : 1.0;
 
-            // make Pauli matrices
-            PauliMatrixGen p;
-            Matrix2cd pauli0 {p.makePauli0()};
-            Matrix2cd pauli1 {p.makePauli1()};
-            Matrix2cd pauli2 {p.makePauli2()};
-            Matrix2cd pauli3 {p.makePauli3()};
-
-            // construct normal state Hamiltonian
-            double h00 { -t1*(cos(kx)+cos(ky)) - mu};
-            double h10 {2*t3*(sin(kx)*sin(ky))};
-            double h30 { -t2*(cos(kx)-cos(ky))};
-            double h23 {soc};
-
-            // construct velocity terms (vx5=vy5=0) in one sector
-            double v00x {t1*sin(kx)};
-            double v00y {t1*sin(ky)};
-            double v10x {2*t3*cos(kx)*sin(ky)};
-            double v10y {2*t3*sin(kx)*cos(ky)};
-            double v30x { t2*sin(kx)};
-            double v30y {-t2*sin(ky)};
-            Matrix4cd Vx {v00x*kron(pauli0,pauli0) + v10x*kron(pauli0,pauli1) + v30x*kron(pauli0,pauli3)};
-            Matrix4cd Vy {v00y*kron(pauli0,pauli0) + v10y*kron(pauli0,pauli1) + v30y*kron(pauli0,pauli3)};
-
-            // construct pairing potential
-            complexd d01 = delta0optim.val[0]*(sin(kx)+1i*sin(ky));
-            complexd d31 = delta0optim.val[1]*(sin(kx)-1i*sin(ky));
-
-            // explicitly construct one sector of the BdG Hamiltonian
-            Matrix4cd HBdg;
-            HBdg << h00+h30, h10-1i*h23, d01+d31, 0,
-                    h10+1i*h23, h00-h30, 0, d01-d31,
-                    std::conj(d01)+std::conj(d31), 0, -h00-h30, -h10+1i*h23,
-                    0, std::conj(d01)-std::conj(d31), -h10-1i*h23, -h00+h30;
+            // construct velocity matrices and Hamiltonian in one sector
+            HamiltonianGen h;
+            Matrix4cd Vx   { h.make_Vx(kx,ky) };
+            Matrix4cd Vy   { h.make_Vy(kx,ky) };
+            Matrix4cd HBdg { h.make_HBdg(delta0optim,kx,ky) };
 
             // calculate eigenvalues and eigenvectors of BdG Hamiltonian
             Eigen::ComplexEigenSolver<Matrix4cd> ces;
