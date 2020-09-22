@@ -90,6 +90,16 @@ struct HallParameters
     double zeroPlus   {};   // The numerical approximation of the positive infintessimal in the analytic continuation
 };
 
+std::ostream& operator<<(std::ostream& out, const HallParameters& hp)
+{
+    out << "_T="         << hp.temp
+        << "_Nk="        << hp.Nk
+        << "_Nf="        << hp.Nf
+        << "_deltaFreq=" << hp.deltaFreq
+        << "_zeroPlus="  << hp.zeroPlus;
+    return out;
+}
+
 // PauliMatrixGen provides functions that return each of the Pauli matrices (including the identity)
 class PauliMatrixGen
 {
@@ -435,12 +445,7 @@ int main()
 
     // Name the file to write the data to
     std::stringstream ss;
-    ss  << "hall_T=" << params.temp
-        << "_Nk=" << params.Nk
-        << "_Nf=" << params.Nf
-        << "_deltaFreq=" << params.deltaFreq
-        << "_zeroPlus=" << params.zeroPlus
-        << ".csv";
+    ss  << "hall" << params << ".csv";
     std::string fileName;
     ss >> fileName;
 
