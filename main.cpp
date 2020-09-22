@@ -363,7 +363,6 @@ void OptimizeFreeEnergy(DeltaWrap initial_guess, int max_iters, FreeEnergyParame
     // Construct initial working simplex (use a right-angled simplex)
     // The FreeEnergyValue() constructor calculates f
     double stepsize = 1.0;
-    
     std::vector<FreeEnergyValue> initialValues;
     initialValues.reserve(n+1);
     initialValues.push_back(FreeEnergyValue(initial_guess, params));
