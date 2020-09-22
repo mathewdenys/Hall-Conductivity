@@ -219,11 +219,11 @@ double FreeEnergy(const DeltaWrap& delta0optim, FreeEnergyParameters& params) //
             
             // sum over positive eigenvalues
             for (int i=0; i<4; i++)
-                {
-                    double    evali = real(ces.eigenvalues()[i]);
-                    if (evali > 0) // Eigen does not sort eigenvalues in any particular order
-                        freeEnergySum += (evali + 2*temp*log(1+exp(-evali/temp)))*bzdiagonal;
-                }
+			{
+				double    evali = real(ces.eigenvalues()[i]);
+				if (evali > 0) // Eigen does not sort eigenvalues in any particular order
+					freeEnergySum += (evali + 2*temp*log(1+exp(-evali/temp)))*bzdiagonal;
+			}
         }
 
     return -8*freeEnergySum/pow(N,2) - 0.5*(pow(delta0optim.val[0],2)/lambda1 + pow(delta0optim.val[1],2)/lambda2
@@ -233,8 +233,8 @@ double FreeEnergy(const DeltaWrap& delta0optim, FreeEnergyParameters& params) //
 void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0optim, HallParameters& params)
 { // Note that delta0optim passed in here *is* the true pairing potential (unlike in FreeEnergy())
     // local variables for the HallParameters that are used more than once
-    const int    &N    = params.Nk;
-    const int    &temp = params.temp;
+    const int& N    = params.Nk;
+    const int& temp = params.temp;
     assert(N%2==0 && "N must be divisible by 2 in order to sum over partial Brillouin zone");
 
     // ensure the Hall conductivity array is set to zero before beginning
@@ -267,25 +267,25 @@ void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0o
                 complexd omega = (freqInd+1)*params.deltaFreq + 1i*params.zeroPlus;
                 for (int i = 0; i < 4; i++)
                 {
-                    double    evali = real(ces.eigenvalues()[i]);
+                    double    evali = real(ces.eigenvalues()[i]);	// Accessor only, compute is done in ces.compute
                     Vector4cd eveci = ces.eigenvectors().col(i);
                     for (int j = 0; j < 4; j++)
                     {
                         double    evalj = real(ces.eigenvalues()[j]);
                         Vector4cd evecj = ces.eigenvectors().col(j);
                         hallOut[freqInd] += 2i*imag(eveci.dot(Vx*evecj) * evecj.dot(Vy*eveci))
-                                             * (tanh(evali/(2*temp))-tanh(evalj/(2*temp)))
-                                             / ( real(omega)*(evali - evalj + omega) ) * bzdiagonal; 
+                                             * (tanh(evali/(2*temp))-tanh(evalj/(2*temp))) * bzdiagonal
+                                             / ( real(omega)*(evali - evalj + omega) ) ;
                     }
                 }
             }
         }
 
         std::transform(hallOut.begin(), hallOut.end(), hallOut.begin(),
-                        [&N](complexd& hall) -> complexd
-                            {
-                                return hall*8.0*2.0/(8i*pow(N,2)); // x8 for BZ summation; x2 for each sector; divide by prefactor
-                            }); 
+                        [&N](const complexd& hall)
+						{
+							return hall*8.0*2.0/(8i*pow(N,2)); // x8 for BZ summation; x2 for each sector; divide by prefactor
+						});
 }
 
 
@@ -299,22 +299,25 @@ void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0o
 
 class FreeEnergyValue
 {
-private:
-    DeltaWrap x;
-    double f;
-    FreeEnergyParameters params;
-    
+
 public:
+
+    FreeEnergyValue(DeltaWrap x_in, FreeEnergyParameters& params_in) :
+    	x{ x_in},
+    	params{ params_in },
+    	f{ FreeEnergy(x,params) }
+	{ }
+
     void set_x(DeltaWrap x_in) {x = x_in;}
     void calc_f(double f_in)   {f = FreeEnergy(x,params);} // todo: eventaully get rid of this, so that the internal state is always consistent
     double get_f()    {return f;}
     DeltaWrap get_x() {return x;}
 
-    FreeEnergyValue(DeltaWrap x_in, FreeEnergyParameters& params_in)
-        : x{ x_in}, params{ params_in }
-    {
-        f = FreeEnergy(x,params);
-    }
+
+private:
+    DeltaWrap x;					///< This is ..
+    double f;						///< This is ..
+    FreeEnergyParameters params; 	///<This is ..
 };
 
 bool operator<(FreeEnergyValue& in1, FreeEnergyValue& in2) // for ordering in OptimizeFreeEnergy()
@@ -342,8 +345,9 @@ DeltaWrap computeContractPoint(DeltaWrap& c, DeltaWrap& x_highest_or_reflect, do
 
 void OptimizeFreeEnergy(DeltaWrap initial_guess, int max_iters, FreeEnergyParameters& params) 
 {
-    // the dimensionality of the input
-    const int n = 2;
+	// OptimizeFreeEnergy finds the pairing potential which minimizes the Free energy using a Nelder Meade numerical optimization.
+	
+    const int n = 2;    // the dimensionality of the input
 
     // standard parameters for the transformation
     double alpha = 1.0;
@@ -359,18 +363,19 @@ void OptimizeFreeEnergy(DeltaWrap initial_guess, int max_iters, FreeEnergyParame
     // Construct initial working simplex (use a right-angled simplex)
     // The FreeEnergyValue() constructor calculates f
     double stepsize = 1.0;
+    
     std::vector<FreeEnergyValue> initialValues;
     initialValues.reserve(n+1);
     initialValues.push_back(FreeEnergyValue(initial_guess, params));
-
     initialValues.push_back(FreeEnergyValue(initial_guess + DeltaWrap(stepsize,0.0), params));
     initialValues.push_back(FreeEnergyValue(initial_guess + DeltaWrap(0.0,stepsize), params));
+
 
     // Minimise the function
     while (!term_x && !term_f && !fail)
     {
         // 1. Ordering
-        std::sort(initialValues.begin(),initialValues.end(), [](FreeEnergyValue& in1, FreeEnergyValue& in2) -> bool {return (in1<in2);});
+        std::sort(initialValues.begin(),initialValues.end(), [](FreeEnergyValue& in1, FreeEnergyValue& in2) {return (in1<in2);});
 
         // 2. Centroid
         // Once sorted, the last element of 'initialValues' corresponds to the highest free energy, so is ignored when determining the centroid
@@ -378,6 +383,9 @@ void OptimizeFreeEnergy(DeltaWrap initial_guess, int max_iters, FreeEnergyParame
 
         // 3. Transformation
         FreeEnergyValue replacementValue {initialValues.back()}; // initialise value to replace the highest free energy
+
+		auto loopAssign = [&](FreeEnergyValue& rep) { replacementValue = rep; initialValues.back() = rep; }; // replace worst point on the simplex
+
 
         DeltaWrap x_highest = initialValues.back().get_x();
         DeltaWrap x_reflect = computeReflectPoint(c,x_highest,alpha);
@@ -390,18 +398,24 @@ void OptimizeFreeEnergy(DeltaWrap initial_guess, int max_iters, FreeEnergyParame
         double f_reflect = reflectValue.get_f();
 
         if (f_lowest <= f_reflect && f_reflect < f_second)
-            replacementValue = reflectValue;
-        else if (f_reflect < f_lowest)
+        {
+            loopAssign(reflectValue)
+            continue;
+		}
+		
+        if (f_reflect < f_lowest)
         {
             DeltaWrap x_expand = computeExpandPoint(c,reflectValue.get_x(),gamma);
             FreeEnergyValue expandValue {x_expand,params};
             double f_expand = expandValue.get_f();
             if (f_expand < f_reflect)
-                replacementValue = expandValue;
+                loopAssign(expandValue);
             else
-                replacementValue = reflectValue;
+                loopAssign(reflectValue);
+            continue;
         }
-        else if (f_second <= f_reflect)
+        
+        if (f_second <= f_reflect)
         {
             DeltaWrap x_contract;
             if (f_reflect < f_highest)
@@ -410,30 +424,29 @@ void OptimizeFreeEnergy(DeltaWrap initial_guess, int max_iters, FreeEnergyParame
                 FreeEnergyValue contractValue {x_contract,params};
                 double f_contract = contractValue.get_f();
                 if (f_contract <= f_reflect)
-                    replacementValue = contractValue;
+                    loopAssign(contractValue);
+				continue;
             }
-            else if (f_reflect >= f_highest)
+            
+            if (f_reflect >= f_highest)
             {
                 x_contract = computeExpandPoint(c,x_highest,gamma);
                 FreeEnergyValue contractValue {x_contract,params};
                 double f_contract = contractValue.get_f();
                 if (f_contract < f_highest)
-                    replacementValue = contractValue;
+                	loopAssign(contractValue);
+				continue;
             }
+            loopAssign(replacementValue);
         }
-        else
-        {
-            for (int i=1; i<=2; i++) // update the worst and second worst points
-            {
-                DeltaWrap x_lowest  = initialValues.front().get_x();
-                DeltaWrap x_current = initialValues.at(i).get_x();
-                DeltaWrap x_updated = x_lowest + delta*(x_current - x_lowest);
-                initialValues.at(i) = FreeEnergyValue {x_updated,params};
-            }
-            continue;
-        }
-
-        initialValues.back() = replacementValue; // replace worst point on the simplex
+        
+		for (int i=1; i<=2; i++) // update the worst and second worst points
+		{
+			DeltaWrap x_lowest  = initialValues.front().get_x();
+			DeltaWrap x_current = initialValues.at(i).get_x();
+			DeltaWrap x_updated = x_lowest + delta*(x_current - x_lowest);
+			initialValues.at(i) = FreeEnergyValue {x_updated,params};
+		}
     }
 
 }
