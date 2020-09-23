@@ -96,6 +96,12 @@ struct FreeEnergyParameters
     int    Nk       {};	// The number of lattice points (per dimension) to sum over
 };
 
+std::ostream& operator<<(std::ostream& out, const FreeEnergyParameters& fep)
+{
+    out << "T=" << fep.temp  << "_Nk=" << fep.Nk;
+    return out;
+}
+
 // HallParameters stores parameters to be passed to the HallConductivity() function
 struct HallParameters
 {
@@ -108,7 +114,7 @@ struct HallParameters
 
 std::ostream& operator<<(std::ostream& out, const HallParameters& hp)
 {
-    out << "_T="         << hp.temp
+    out << "T="         << hp.temp
         << "_Nk="        << hp.Nk
         << "_Nf="        << hp.Nf
         << "_deltaFreq=" << hp.deltaFreq
@@ -236,72 +242,6 @@ double FreeEnergy(const DeltaWrap& delta0optim, FreeEnergyParameters& params)
                 + lambda3/(lambda1*lambda2) * 2 * delta0optim.delta01 * delta0optim.delta31); 
 }
 
-// HallConductivity() calculates the Hall conductivity as a function of frequency and overwrites it to hallOut
-// Note that delta0optim passed in here is the true pairing potential (unlike in FreeEnergy())
-void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0optim, HallParameters& params)
-{ 
-    // local variables for the HallParameters that are used more than once
-    const int& temp = params.temp;
-    const int& N    = params.Nk;
-    assert(N%2==0 && "N must be divisible by 2 in order to sum over partial Brillouin zone");
-
-    // ensure the Hall conductivity array is set to zero before beginning
-    for (int freqInd = 0; freqInd < params.Nf; freqInd++)
-        hallOut[freqInd] = 0i;
-    
-    // sum over one eighth of the brillouin zone (note upper limit in each for loop)
-    for (int nx=N/2; nx<N; ++nx)
-        for (int ny=N/2; ny<=nx; ++ny) 
-        {
-            // calculate momentum values
-            double kx = (2*nx-N+1)*M_PI/N;
-            double ky = (2*ny-N+1)*M_PI/N;
-
-            // don't double count diagonals of the Brillouin zone
-            double bzdiagonal = (nx==ny) ? 0.5 : 1.0;
-
-            // construct velocity matrices and Hamiltonian in one sector
-            HamiltonianGen h;
-            Matrix4cd Vx   { h.makeVx(kx,ky) };
-            Matrix4cd Vy   { h.makeVy(kx,ky) };
-            Matrix4cd HBdg { h.makeHBdG(delta0optim,kx,ky) };
-
-            // calculate eigenvalues and eigenvectors of BdG Hamiltonian
-            Eigen::ComplexEigenSolver<Matrix4cd> ces;
-            ces.compute(HBdg); 
-
-            for (int freqInd = 0; freqInd < params.Nf; freqInd++)
-            {
-                complexd omega = (freqInd+1)*params.deltaFreq + 1i*params.zeroPlus;
-                for (int i = 0; i < 4; i++)
-                {
-                    double    evali = real(ces.eigenvalues()[i]);	// eigenvalues() is an accessor only; the computation is done in ces.compute()
-                    Vector4cd eveci = ces.eigenvectors().col(i);    // column k of .eigenvectors() corresponds to the kth .eigenvalue()
-                    for (int j = 0; j < 4; j++)
-                    {
-                        double    evalj = real(ces.eigenvalues()[j]);
-                        Vector4cd evecj = ces.eigenvectors().col(j);
-                        hallOut[freqInd] += 2i*imag(eveci.dot(Vx*evecj) * evecj.dot(Vy*eveci))
-                                             * (tanh(evali/(2*temp))-tanh(evalj/(2*temp))) * bzdiagonal
-                                             / ( real(omega)*(evali - evalj + omega) ) ;
-                    }
-                }
-            }
-        }
-
-    std::transform(hallOut.begin(), hallOut.end(), hallOut.begin(),
-                    [&N](const complexd& hall) { return hall*8.0*2.0/(8i*pow(N,2)); } // x8 for BZ summation; x2 for each sector; divide by prefactor
-                    );
-}
-
-
-
-
-
-// Below is my implementation of the Nelder-Mead algorithm
-// I am limiting its applicability to a function, f: R^2 -> R (not the general R^n -> R case)
-// Implemented following http://www.scholarpedia.org/article/Nelder-Mead_algorithm
-
 // FreeEnergyValue stores a pairing potential along with the corresponding free energy
 class FreeEnergyValue
 {
@@ -333,6 +273,7 @@ DeltaWrap computeReflectPoint (DeltaWrap& c, DeltaWrap& xh,  double alpha) { ret
 DeltaWrap computeExpandPoint  (DeltaWrap& c, DeltaWrap& xr,  double gamma) { return c + gamma*(xr-c); }
 DeltaWrap computeContractPoint(DeltaWrap& c, DeltaWrap& xhr, double beta)  { return c + beta*(xhr-c); }
 
+// NMOutput stores useful values and information from running OptimizeFreeEnergy()
 struct NMOutput
 {
     bool      success;         // 0 if the optimization failed (reached maximum number of iterations), 1 if optimization succeeded (reached termination condition)
@@ -345,7 +286,7 @@ struct NMOutput
 std::ostream& operator<<(std::ostream& out, const NMOutput& output)
 {
     std::string success = output.success ? "success" : "failure";
-    out << "\nThe optimisation was a " << success << ", with the following:\n\n"
+    out << "\n\nThe optimisation was a " << success << ", with the following:\n\n"
         << std::setw(15) << std::left << "\tMinimizer:"   << output.minimizer  << '\n'
         << std::setw(15) << std::left << "\tMinimum:"     << output.minimum    << "\n\n"
         << std::setw(15) << std::left << "\tIterations:"  << output.iterations << '\n'
@@ -356,15 +297,16 @@ std::ostream& operator<<(std::ostream& out, const NMOutput& output)
 using FreeEnergyValuesArray = std::vector<FreeEnergyValue>;
 
 // OptimizeFreeEnergy() finds the pairing potential which minimizes the Free energy using a Nelder Mead algorithm
+// Implemented following http://www.scholarpedia.org/article/Nelder-Mead_algorithm. No effort has been made to implement
+// a general Nelder-Mead method. OptimizeFreeEnergy() is limited to f: R^2 -> R, and explicitly calls FreeEnergy().
 NMOutput OptimizeFreeEnergy(DeltaWrap initialGuess,  FreeEnergyParameters& params) 
 {
-    const int n = 2;               // The dimensionality of the input
-    double terminationCond = 1e-6; // The domain termination condition
+    const int n               = 2;    // The dimensionality of the input
+    double    terminationCond = 1e-6; // The domain termination condition
+    const int maxIterations   = 200;  // The maximum number of iterations of the Nelder Mead method before failing
+    double    stepsize        = 1.0;  // The step size, h, for constructing the intial right-angled simplex
 
-    const int maxIterations = 200; // The maximum number of iterations of the Nelder Mead method before failing
-    double stepsize = 1.0;         // The step size, h, for constructing the intial right-angled simplex
-
-    // standard parameters for the transformation
+    // standard parameters for the transformations
     double alpha = 1.0;
     double beta  = 0.5;
     double gamma = 2.0;
@@ -469,66 +411,112 @@ NMOutput OptimizeFreeEnergy(DeltaWrap initialGuess,  FreeEnergyParameters& param
     return output;
 }
 
+// HallConductivity() calculates the Hall conductivity as a function of frequency and overwrites it to hallOut
+// Note that delta0optim passed in here is the true pairing potential (unlike in FreeEnergy())
+void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0optim, HallParameters& params)
+{ 
+    // local variables for the HallParameters that are used more than once
+    const int& temp = params.temp;
+    const int& N    = params.Nk;
+    assert(N%2==0 && "N must be divisible by 2 in order to sum over partial Brillouin zone");
 
+    // ensure the Hall conductivity array is set to zero before beginning
+    for (int freqInd = 0; freqInd < params.Nf; freqInd++)
+        hallOut[freqInd] = 0i;
+    
+    // sum over one eighth of the brillouin zone (note upper limit in each for loop)
+    for (int nx=N/2; nx<N; ++nx)
+        for (int ny=N/2; ny<=nx; ++ny) 
+        {
+            // calculate momentum values
+            double kx = (2*nx-N+1)*M_PI/N;
+            double ky = (2*ny-N+1)*M_PI/N;
 
+            // don't double count diagonals of the Brillouin zone
+            double bzdiagonal = (nx==ny) ? 0.5 : 1.0;
 
+            // construct velocity matrices and Hamiltonian in one sector
+            HamiltonianGen h;
+            Matrix4cd Vx   { h.makeVx(kx,ky) };
+            Matrix4cd Vy   { h.makeVy(kx,ky) };
+            Matrix4cd HBdg { h.makeHBdG(delta0optim,kx,ky) };
+
+            // calculate eigenvalues and eigenvectors of BdG Hamiltonian
+            Eigen::ComplexEigenSolver<Matrix4cd> ces;
+            ces.compute(HBdg); 
+
+            for (int freqInd = 0; freqInd < params.Nf; freqInd++)
+            {
+                complexd omega = (freqInd+1)*params.deltaFreq + 1i*params.zeroPlus;
+                for (int i = 0; i < 4; i++)
+                {
+                    double    evali = real(ces.eigenvalues()[i]);	// eigenvalues() is an accessor only; the computation is done in ces.compute()
+                    Vector4cd eveci = ces.eigenvectors().col(i);    // column k of .eigenvectors() corresponds to the kth .eigenvalue()
+                    for (int j = 0; j < 4; j++)
+                    {
+                        double    evalj = real(ces.eigenvalues()[j]);
+                        Vector4cd evecj = ces.eigenvectors().col(j);
+                        hallOut[freqInd] += 2i*imag(eveci.dot(Vx*evecj) * evecj.dot(Vy*eveci))
+                                             * (tanh(evali/(2*temp))-tanh(evalj/(2*temp))) * bzdiagonal
+                                             / ( real(omega)*(evali - evalj + omega) ) ;
+                    }
+                }
+            }
+        }
+
+    std::transform(hallOut.begin(), hallOut.end(), hallOut.begin(),
+                    [&N](const complexd& hall) { return hall*8.0*2.0/(8i*pow(N,2)); } // x8 for BZ summation; x2 for each sector; divide by prefactor
+                    );
+}
 
 int main()
 {
-    // Define pairing potential. In the future this will be calculated
-    DeltaWrap delta0optim{ 0.01, -0.01 };
+    // Determine optimal pairing potential at the given temperature
+    DeltaWrap delta0optim{ 0.01, -0.01 }; // inital guess
+    FreeEnergyParameters fparams { temp, Nk };
+    std::cout << "\nOptimizing free energy using the following parameters:\n\n\t" << fparams;
+    NMOutput freeEnergyOutput = OptimizeFreeEnergy(delta0optim, fparams);
+    std::cout << freeEnergyOutput;
 
-    FreeEnergyParameters fparams;
-    fparams.Nk = Nk;
-    fparams.temp = temp;
-
-    double fev = FreeEnergy(delta0optim,fparams);
-    std::cout << fev;
-
-    NMOutput output;
-    output = OptimizeFreeEnergy(delta0optim, fparams);
-    std::cout << output;
-
-
-    /* 
-    // Set up parameters for the calculation
-    HallParameters params;
-    params.temp = temp;
-    params.Nk = Nk;
-    params.Nf = Nf;
-    params.deltaFreq = deltaFreq;
-    params.zeroPlus = zeroPlus;
-
-    // Calculate Hall conductivity
-    std::array<complexd,Nf> hall {}; // initialize array to store the Hall conductivity
-    HallConductivity(hall, delta0optim, params);
-
-    // Name the file to write the data to
-    std::stringstream ss;
-    std::string fileName;
-    ss << "hall" << params << ".csv";
-    ss >> fileName;
-
-    // Save data to file (file will be overwritten)
-    std::ofstream outFile {fileName};
-
-    if (!outFile)
+    if (freeEnergyOutput.success)
     {
-        std::cerr << fileName <<" could not be opened for writing";
-        return 1;
-    }
-    
-    int counter = 0;
-    for (complexd cnum : hall)
-    {
-        outFile << counter*params.deltaFreq << ","  // column 1: the frequency
-                << real(cnum) << ","                // column 2: real part of Hall the conductivity
-                << imag(cnum) <<"\n";               // column 3: imaginary part of the Hall conductivity
-        counter++;
-    }
+        // Calculate Hall conductivity as a function of frequency
+        HallParameters hparams {temp, Nk, Nf, deltaFreq, zeroPlus}; // set up parameters for the calculation
+        std::cout << "\n\nCalculating the Hall conductivity using the following parameters:\n\n\t" << hparams;
+        std::array<complexd,Nf> hall {};                            // initialize array to store the Hall conductivity
+        HallConductivity(hall, delta0optim, hparams);
 
-    outFile.close();
-    std::cout << "Hall conductivity data has been saved to " << fileName; */
+        // Name the file to write the data to
+        std::stringstream ss;
+        std::string fileName;
+        ss << "hall_" << hparams << ".csv";
+        ss >> fileName;
+
+        // Save data to file (file will be overwritten)
+        std::ofstream outFile {fileName};
+
+        if (!outFile)
+        {
+            std::cerr << fileName <<" could not be opened for writing";
+            return 1;
+        }
+        
+        int counter = 0;
+        for (complexd cnum : hall)
+        {
+            outFile << counter*hparams.deltaFreq << ","  // column 1: the frequency
+                    << real(cnum) << ","                // column 2: real part of Hall the conductivity
+                    << imag(cnum) <<"\n";               // column 3: imaginary part of the Hall conductivity
+            counter++;
+        }
+
+        outFile.close();
+        std::cout << "\n\nHall conductivity data has been saved to " << fileName;
+    }
+    else
+    {
+        std::cout << "\n\nHall conductivity has not been calculated.";
+    }
 
     return 0;
 }
