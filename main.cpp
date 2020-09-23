@@ -2,12 +2,20 @@
  * Calculates the Hall conductivity as a function of frequency, at a given temperature. This is achieved 
  * by first determining the optimal pairing potential amplitudes by minimising the Helmholtz free energy,
  * which is then passed to the Hall conductivity. This file deals exclusively with the "triplet-triplet"
- * model outlined in my MSc thesis, using a phenomenological interaction potential.
- * Refer to: http://mathew.denys.nz/assets/files/2020/msc_thesis.pdf
+ * model outlined in my MSc thesis. Refer to: http://mathew.denys.nz/assets/files/2020/msc_thesis.pdf.
+ * 
+ * Each of FreeEnergy(), OptimizeFreeEnergy(), and HallConductivity() have been confirmed to give results
+ * consistent with my pre-existing Julia code, for N=20 and N=50. The output of OptimizeFreeEnergy() is in
+ * the least agreement, primarily because it is dependent on the implementation of the Nelder-Mead method.
+ * I would guess that the (relatively small) discrepancy arises primarily from the termination condition:
+ * I have implemented a rather naive domain termination condition, while the Optim.jl library defaults to
+ * a function-value termination condition. On top of this, the output will be somewhat dependent on actual
+ * convergence criterion used in the termination condition (taken here to be 1e-6).
  */
 
 #define _USE_MATH_DEFINES   // access M_Pi in <cmath>
 #include <iostream>         // std::cout
+#include <iomanip>          // std::setw
 #include <cmath>            // M_Pi, exp, tanh, sqrt
 #include <array>            // std::array
 #include <vector>           // std::vector
@@ -36,8 +44,8 @@ const double lambda2 = -0.265;   // The interaction strength in the 31 channel
 const double lambda3 =  0.03;    // The inter-channel interaction strength
 
 // Define calculation parameters
-const double temp      = 0.0001; // The temperature
-const int    Nk        = 10;     // The number of momentum points (per dimension) to sum over
+const double temp      = 0.01;   // The temperature
+const int    Nk        = 50;     // The number of momentum points (per dimension) to sum over
 const int    Nf        = 150;    // The number of frequencies to evaluate the Hall conductivity at
 const double deltaFreq = 0.01;   // The spacing between frequency values (first frequency is deltaFreq)
 const double zeroPlus  = 0.001;  // The numerical approximation of the positive infintessimal in the analytic continuation
@@ -74,6 +82,12 @@ DeltaWrap operator+(const DeltaWrap& dw1, const DeltaWrap& dw2) { return DeltaWr
 DeltaWrap operator-(const DeltaWrap& dw1, const DeltaWrap& dw2) { return DeltaWrap(dw1.delta01 - dw2.delta01, dw1.delta31 - dw2.delta31); }
 
 double deltaAbs(DeltaWrap& dw) { return sqrt(pow(dw.delta01,2) + pow(dw.delta31,2)); } // takes the absolute value of a pairing potential
+
+std::ostream& operator<<(std::ostream& out, const DeltaWrap& dw)
+{
+    out << "[" << dw.delta01 << ", " << dw.delta31 << "]";
+    return out;
+}
 
 // FreeEnergyParameters stores parameters to be passed to the FreeEnergy() function
 struct FreeEnergyParameters
@@ -295,7 +309,7 @@ public:
     FreeEnergyValue(DeltaWrap x_in, FreeEnergyParameters& params_in) :
     	x{ x_in },
     	params{ params_in },
-    	f{ FreeEnergy(x,params) }
+    	f{ FreeEnergy(x_in,params_in) }
 	{ }
 
     double    getf() { return f; }
@@ -308,7 +322,7 @@ public:
     }
 
 private:
-    DeltaWrap x;					// The pairing potential ("point in 2D Delta-space") at which the free energy is calculates
+    DeltaWrap x;					// The pairing potential ("point in 2D Delta-space") at which the free energy is calculated
     double    f;					// The free energy of the system at x
     FreeEnergyParameters params; 	// The parameters required to calcualte the free energy
 };
@@ -319,15 +333,36 @@ DeltaWrap computeReflectPoint (DeltaWrap& c, DeltaWrap& xh,  double alpha) { ret
 DeltaWrap computeExpandPoint  (DeltaWrap& c, DeltaWrap& xr,  double gamma) { return c + gamma*(xr-c); }
 DeltaWrap computeContractPoint(DeltaWrap& c, DeltaWrap& xhr, double beta)  { return c + beta*(xhr-c); }
 
+struct NMOutput
+{
+    bool      success;         // 0 if the optimization failed (reached maximum number of iterations), 1 if optimization succeeded (reached termination condition)
+    DeltaWrap minimizer;       // The pairing potential that minimizes the free energy
+    double    minimum;         // The corresponding minimum value of the free energy
+    int       iterations;      // The number of iterations the NM algorithm went through to obtain the output
+    double    terminationCond; // The domain termination condition that was used
+};
+
+std::ostream& operator<<(std::ostream& out, const NMOutput& output)
+{
+    std::string success = output.success ? "success" : "failure";
+    out << "\nThe optimisation was a " << success << ", with the following:\n\n"
+        << std::setw(15) << std::left << "\tMinimizer:"   << output.minimizer  << '\n'
+        << std::setw(15) << std::left << "\tMinimum:"     << output.minimum    << "\n\n"
+        << std::setw(15) << std::left << "\tIterations:"  << output.iterations << '\n'
+        << std::setw(15) << std::left << "\tTerm. cond.:" << output.terminationCond;
+    return out;
+}
+
 using FreeEnergyValuesArray = std::vector<FreeEnergyValue>;
 
 // OptimizeFreeEnergy() finds the pairing potential which minimizes the Free energy using a Nelder Mead algorithm
-FreeEnergyValuesArray OptimizeFreeEnergy(DeltaWrap initialGuess,  FreeEnergyParameters& params) 
+NMOutput OptimizeFreeEnergy(DeltaWrap initialGuess,  FreeEnergyParameters& params) 
 {
     const int n = 2;               // The dimensionality of the input
-    const int maxIterations = 20;  // The maximum number of iterations of the Nelder Mead method before failing
-    double stepsize = 1.0;         // The step size, h, for constructing the intial right-angled simplex
     double terminationCond = 1e-6; // The domain termination condition
+
+    const int maxIterations = 200; // The maximum number of iterations of the Nelder Mead method before failing
+    double stepsize = 1.0;         // The step size, h, for constructing the intial right-angled simplex
 
     // standard parameters for the transformation
     double alpha = 1.0;
@@ -430,7 +465,8 @@ FreeEnergyValuesArray OptimizeFreeEnergy(DeltaWrap initialGuess,  FreeEnergyPara
 		}
     }
 
-    return values;
+    NMOutput output{ iterations < maxIterations, values.back().getx(), values.back().getf(), iterations, terminationCond };
+    return output;
 }
 
 
@@ -440,14 +476,19 @@ FreeEnergyValuesArray OptimizeFreeEnergy(DeltaWrap initialGuess,  FreeEnergyPara
 int main()
 {
     // Define pairing potential. In the future this will be calculated
-    DeltaWrap delta0optim{ 0.2, 0.05};
+    DeltaWrap delta0optim{ 0.01, -0.01 };
 
     FreeEnergyParameters fparams;
     fparams.Nk = Nk;
     fparams.temp = temp;
 
-    FreeEnergyValuesArray output;
+    double fev = FreeEnergy(delta0optim,fparams);
+    std::cout << fev;
+
+    NMOutput output;
     output = OptimizeFreeEnergy(delta0optim, fparams);
+    std::cout << output;
+
 
     /* 
     // Set up parameters for the calculation
