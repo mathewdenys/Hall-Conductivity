@@ -8,7 +8,7 @@
 
 #define _USE_MATH_DEFINES   // access M_Pi in <cmath>
 #include <iostream>         // std::cout
-#include <cmath>            // M_Pi, exp, tanh
+#include <cmath>            // M_Pi, exp, tanh, sqrt
 #include <array>            // std::array
 #include <vector>           // std::vector
 #include <fstream>          // std::ofstream
@@ -72,6 +72,8 @@ template <typename T>
 DeltaWrap operator*(T scalar, const DeltaWrap& dwin)            { return DeltaWrap(dwin.delta01*scalar, dwin.delta31*scalar); }
 DeltaWrap operator+(const DeltaWrap& dw1, const DeltaWrap& dw2) { return DeltaWrap(dw1.delta01 + dw2.delta01, dw1.delta31 + dw2.delta31); }
 DeltaWrap operator-(const DeltaWrap& dw1, const DeltaWrap& dw2) { return DeltaWrap(dw1.delta01 - dw2.delta01, dw1.delta31 - dw2.delta31); }
+
+double deltaAbs(DeltaWrap& dw) { return sqrt(pow(dw.delta01,2) + pow(dw.delta31,2)); } // takes the absolute value of a pairing potential
 
 // FreeEnergyParameters stores parameters to be passed to the FreeEnergy() function
 struct FreeEnergyParameters
@@ -273,9 +275,9 @@ void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0o
             }
         }
 
-        std::transform(hallOut.begin(), hallOut.end(), hallOut.begin(),
-                        [&N](const complexd& hall) { return hall*8.0*2.0/(8i*pow(N,2)); } // x8 for BZ summation; x2 for each sector; divide by prefactor
-                      );
+    std::transform(hallOut.begin(), hallOut.end(), hallOut.begin(),
+                    [&N](const complexd& hall) { return hall*8.0*2.0/(8i*pow(N,2)); } // x8 for BZ summation; x2 for each sector; divide by prefactor
+                    );
 }
 
 
@@ -283,8 +285,7 @@ void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0o
 
 
 // Below is my implementation of the Nelder-Mead algorithm
-// I am limiting its applicability to what I need here
-// i.e. minimising a function, f: R^2 -> R (not the general R^n -> R case)
+// I am limiting its applicability to a function, f: R^2 -> R (not the general R^n -> R case)
 // Implemented following http://www.scholarpedia.org/article/Nelder-Mead_algorithm
 
 // FreeEnergyValue stores a pairing potential along with the corresponding free energy
@@ -297,8 +298,8 @@ public:
     	f{ FreeEnergy(x,params) }
 	{ }
 
-    double    get_f() { return f; }
-    DeltaWrap get_x() { return x; }
+    double    getf() { return f; }
+    DeltaWrap getx() { return x; }
 
     void set(DeltaWrap x_in)
     {
@@ -312,16 +313,21 @@ private:
     FreeEnergyParameters params; 	// The parameters required to calcualte the free energy
 };
 
-bool operator<(FreeEnergyValue& in1, FreeEnergyValue& in2) { return in1.get_f() < in2.get_f(); } // for ordering in OptimizeFreeEnergy()
+bool operator<(FreeEnergyValue& in1, FreeEnergyValue& in2) { return in1.getf() < in2.getf(); } // for ordering in OptimizeFreeEnergy()
 
 DeltaWrap computeReflectPoint (DeltaWrap& c, DeltaWrap& xh,  double alpha) { return c + alpha*(c-xh); }
 DeltaWrap computeExpandPoint  (DeltaWrap& c, DeltaWrap& xr,  double gamma) { return c + gamma*(xr-c); }
 DeltaWrap computeContractPoint(DeltaWrap& c, DeltaWrap& xhr, double beta)  { return c + beta*(xhr-c); }
 
+using FreeEnergyValuesArray = std::vector<FreeEnergyValue>;
+
 // OptimizeFreeEnergy() finds the pairing potential which minimizes the Free energy using a Nelder Mead algorithm
-void OptimizeFreeEnergy(DeltaWrap initial_guess, int max_iters, FreeEnergyParameters& params) 
+FreeEnergyValuesArray OptimizeFreeEnergy(DeltaWrap initialGuess,  FreeEnergyParameters& params) 
 {
-    const int n = 2;    // the dimensionality of the input
+    const int n = 2;               // The dimensionality of the input
+    const int maxIterations = 20;  // The maximum number of iterations of the Nelder Mead method before failing
+    double stepsize = 1.0;         // The step size, h, for constructing the intial right-angled simplex
+    double terminationCond = 1e-6; // The domain termination condition
 
     // standard parameters for the transformation
     double alpha = 1.0;
@@ -329,97 +335,102 @@ void OptimizeFreeEnergy(DeltaWrap initial_guess, int max_iters, FreeEnergyParame
     double gamma = 2.0;
     double delta = 0.5;
 
-    // Initialise termination tests to be false
-    bool term_x = 0; // Domain termination test. Becomes true when working simplex is suficiently small
-    bool term_f = 0; // Function termination test. Becomes true when some function values are sufficiently close to each other
-    bool fail   = 0; // No-convergence test. Becomes true if the number of iterations exceeds max_iters
+    // Construct initial right-angled working simplex
+    FreeEnergyValuesArray values;
+    values.reserve(n+1);
+    values.push_back(FreeEnergyValue(initialGuess, params));
+    values.push_back(FreeEnergyValue(initialGuess + DeltaWrap(stepsize,0.0), params));
+    values.push_back(FreeEnergyValue(initialGuess + DeltaWrap(0.0,stepsize), params));
 
-    // Construct initial working simplex (use a right-angled simplex)
-    // The FreeEnergyValue() constructor calculates f
-    double stepsize = 1.0;
-    std::vector<FreeEnergyValue> initialValues;
-    initialValues.reserve(n+1);
-    initialValues.push_back(FreeEnergyValue(initial_guess, params));
-    initialValues.push_back(FreeEnergyValue(initial_guess + DeltaWrap(stepsize,0.0), params));
-    initialValues.push_back(FreeEnergyValue(initial_guess + DeltaWrap(0.0,stepsize), params));
+    // terminationTest() returns true if the domain termination condition has been met (i.e. all points are sufficiently close)
+    auto terminationTest = [&](FreeEnergyValuesArray& values)
+                            { 
+                                return deltaAbs(values.at(0).getx() - values.at(1).getx()) < terminationCond
+                                    && deltaAbs(values.at(0).getx() - values.at(2).getx()) < terminationCond
+                                    && deltaAbs(values.at(1).getx() - values.at(2).getx()) < terminationCond;
+                            };
 
-    // Minimise the function
-    while (!term_x && !term_f && !fail)
+    // The following loop continues improving the simplex until either
+    // 1) the domain termination test is satisfied ( this is preferred over a function test as we want an accurate input value), or
+    // 2) it exceeds the specified maximum number of iterations
+    int iterations = 0;
+    while (!terminationTest(values) && iterations < maxIterations)
     {
-        // 1. Ordering (after sorting, the first / last element if initialValues has the lowest / highest free energy)
-        std::sort(initialValues.begin(),initialValues.end(), [](FreeEnergyValue& in1, FreeEnergyValue& in2) {return (in1<in2);});
+        ++iterations;                                                                   // iterate at start because continue statements are used below
 
-        // 2. Centroid
-        DeltaWrap c = 0.5*(initialValues.at(0).get_x() + initialValues.at(1).get_x());
+        std::sort(values.begin(),values.end(),
+                    [](FreeEnergyValue& in1, FreeEnergyValue& in2) {return (in1<in2);}  // sort values such that the first [last] element has the lowest [highest] free energy
+                 ); 
+        double fLowest  = values.at(0).getf();
+        double fSecond  = values.at(1).getf();
+        double fHighest = values.at(2).getf();
 
-        // 3. Transformation
-        FreeEnergyValue replacementValue {initialValues.back()}; // initialise value to replace the highest free energy
+        // perform the reflection
+        DeltaWrap c = 0.5*(values.at(0).getx() + values.at(1).getx());                  // calculate the centroid
+        DeltaWrap xReflect = computeReflectPoint(c,values.back().getx(),alpha);
+        FreeEnergyValue reflectValue {xReflect,params};
+        double fReflect = reflectValue.getf();
 
-		auto loopAssign = [&](FreeEnergyValue& rep) { replacementValue = rep; initialValues.back() = rep; }; // replace worst point on the simplex
+        // loopReplace() replaces the worst point in the simplex
+        auto loopReplace = [&](FreeEnergyValue& rep) { values.back() = rep; };
 
-
-        DeltaWrap x_highest = initialValues.back().get_x();
-        DeltaWrap x_reflect = computeReflectPoint(c,x_highest,alpha);
-        FreeEnergyValue reflectValue {x_reflect,params};
-
-        double f_lowest  = initialValues.at(0).get_f();
-        double f_second  = initialValues.at(1).get_f();
-        double f_highest = initialValues.at(2).get_f();
-        
-        double f_reflect = reflectValue.get_f();
-
-        if (f_lowest <= f_reflect && f_reflect < f_second)
+        if (fLowest <= fReflect && fReflect < fSecond)
         {
-            loopAssign(reflectValue);
+            loopReplace(reflectValue);
             continue;
 		}
 		
-        if (f_reflect < f_lowest)
+        if (fReflect < fLowest)
         {
-            DeltaWrap x_expand = computeExpandPoint(c,reflectValue.get_x(),gamma);
-            FreeEnergyValue expandValue {x_expand,params};
-            double f_expand = expandValue.get_f();
-            if (f_expand < f_reflect)
-                loopAssign(expandValue);
+            DeltaWrap xExpand = computeExpandPoint(c,reflectValue.getx(),gamma);
+            FreeEnergyValue expandValue {xExpand,params};
+            double fExpand = expandValue.getf();
+            if (fExpand < fReflect)
+                loopReplace(expandValue);
             else
-                loopAssign(reflectValue);
+                loopReplace(reflectValue);
             continue;
         }
         
-        if (f_second <= f_reflect)
+        if (fSecond <= fReflect)
         {
-            DeltaWrap x_contract;
-            if (f_reflect < f_highest)
+            DeltaWrap xContract;
+            if (fReflect < fHighest) // contract outside
             {
-                x_contract = computeExpandPoint(c,x_reflect,gamma);
-                FreeEnergyValue contractValue {x_contract,params};
-                double f_contract = contractValue.get_f();
-                if (f_contract <= f_reflect)
-                    loopAssign(contractValue);
-				continue;
+                xContract = computeContractPoint(c,xReflect,gamma);
+                FreeEnergyValue contractValue {xContract,params};
+                double fContract = contractValue.getf();
+                if (fContract <= fReflect)
+                {
+                    loopReplace(contractValue);
+				    continue;
+                }
             }
             
-            if (f_reflect >= f_highest)
+            if (fReflect >= fHighest) // contract inside
             {
-                x_contract = computeExpandPoint(c,x_highest,gamma);
-                FreeEnergyValue contractValue {x_contract,params};
-                double f_contract = contractValue.get_f();
-                if (f_contract < f_highest)
-                	loopAssign(contractValue);
-				continue;
+                xContract = computeContractPoint(c,values.back().getx(),gamma);
+                FreeEnergyValue contractValue {xContract,params};
+                double fContract = contractValue.getf();
+                if (fContract < fHighest)
+                {
+                    loopReplace(contractValue);
+				    continue;
+                }
             }
-            loopAssign(replacementValue);
         }
         
+        // if no reflection, contraction, or expansion was performed, perform a shrink
 		for (int i=1; i<=2; i++) // update the worst and second worst points
 		{
-			DeltaWrap x_lowest  = initialValues.front().get_x();
-			DeltaWrap x_current = initialValues.at(i).get_x();
+			DeltaWrap x_lowest  = values.front().getx();
+			DeltaWrap x_current = values.at(i).getx();
 			DeltaWrap x_updated = x_lowest + delta*(x_current - x_lowest);
-			initialValues.at(i) = FreeEnergyValue {x_updated,params};
+			values.at(i) = FreeEnergyValue {x_updated,params};
 		}
     }
 
+    return values;
 }
 
 
@@ -431,6 +442,14 @@ int main()
     // Define pairing potential. In the future this will be calculated
     DeltaWrap delta0optim{ 0.2, 0.05};
 
+    FreeEnergyParameters fparams;
+    fparams.Nk = Nk;
+    fparams.temp = temp;
+
+    FreeEnergyValuesArray output;
+    output = OptimizeFreeEnergy(delta0optim, fparams);
+
+    /* 
     // Set up parameters for the calculation
     HallParameters params;
     params.temp = temp;
@@ -445,8 +464,8 @@ int main()
 
     // Name the file to write the data to
     std::stringstream ss;
-    ss  << "hall" << params << ".csv";
     std::string fileName;
+    ss << "hall" << params << ".csv";
     ss >> fileName;
 
     // Save data to file (file will be overwritten)
@@ -468,7 +487,7 @@ int main()
     }
 
     outFile.close();
-    std::cout << "Hall conductivity data has been saved to " << fileName;
+    std::cout << "Hall conductivity data has been saved to " << fileName; */
 
     return 0;
 }
