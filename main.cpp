@@ -208,8 +208,9 @@ DeltaWrap DeltaConversion(const DeltaWrap& dw)
 }
 
 // FreeEnergy() returns the Helmholtz free energy for a given pairing state
+// It does *not* deal with the pairing potential, but rather the "unconverted" variational parameters 
 double FreeEnergy(const DeltaWrap& delta0optim, const FreeEnergyParameters& params)
-{ // Note that delta0optim passed in here is *not* the pairing potential, but rather the "unconverted" variational parameters
+{
     double temp = params.temp;
     int    N    = params.Nk;
 
@@ -303,12 +304,13 @@ using FreeEnergyValuesArray = std::vector<FreeEnergyValue>;
 // OptimizeFreeEnergy() finds the pairing potential which minimizes the Free energy using a Nelder Mead algorithm
 // Implemented following http://www.scholarpedia.org/article/Nelder-Mead_algorithm. No effort has been made to implement
 // a general Nelder-Mead method. OptimizeFreeEnergy() is limited to f: R^2 -> R, and explicitly calls FreeEnergy().
+// Like FreeEnergy(), // it does *not* deal with the pairing potential, but rather the "unconverted" variational parameters.
 NMOutput OptimizeFreeEnergy(const DeltaWrap& initialGuess, const FreeEnergyParameters& params) 
 {
-    const int n               = 2;    // The dimensionality of the input
-    double    terminationCond = 1e-6; // The domain termination condition
-    const int maxIterations   = 200;  // The maximum number of iterations of the Nelder Mead method before failing
-    double    stepsize        = 1.0;  // The step size, h, for constructing the intial right-angled simplex
+    const int     n               = 2;    // The dimensionality of the input
+    const double  terminationCond = 1e-6; // The domain termination condition
+    const int     maxIterations   = 200;  // The maximum number of iterations of the Nelder Mead method before failing
+    const double  stepsize        = 1.0;  // The step size, h, for constructing the intial right-angled simplex
 
     // standard parameters for the transformations
     double alpha = 1.0;
@@ -410,8 +412,7 @@ NMOutput OptimizeFreeEnergy(const DeltaWrap& initialGuess, const FreeEnergyParam
 		}
     }
 
-    NMOutput output{ iterations < maxIterations, values.back().getx(), values.back().getf(), iterations, terminationCond };
-    return output;
+    return { iterations < maxIterations, values.back().getx(), values.back().getf(), iterations, terminationCond };
 }
 
 // HallConductivity() calculates the Hall conductivity as a function of frequency and overwrites it to hallOut
@@ -481,45 +482,44 @@ int main()
     NMOutput freeEnergyOutput = OptimizeFreeEnergy(delta0optim, fparams);
     std::cout << freeEnergyOutput;
 
-    if (freeEnergyOutput.success) // if the free energy optimisation succeeded
-    {
-        // Calculate Hall conductivity as a function of frequency
-        HallParameters hparams {temp, Nk, Nf, deltaFreq, zeroPlus}; // set up parameters for the calculation
-        std::cout << "\n\nCalculating the Hall conductivity using the following parameters:\n\n\t" << hparams;
-        std::array<complexd,Nf> hall {};                            // initialize array to store the Hall conductivity
-        HallConductivity(hall, delta0optim, hparams);
-
-        // Name the file to write the data to
-        std::stringstream ss;
-        std::string fileName;
-        ss << "hall_" << hparams << ".csv";
-        ss >> fileName;
-
-        // Save data to file (file will be overwritten)
-        std::ofstream outFile {fileName};
-
-        if (!outFile)
-        {
-            std::cerr << fileName <<" could not be opened for writing";
-            return 1;
-        }
-        
-        int counter = 0;
-        for (complexd cnum : hall)
-        {
-            outFile << counter*hparams.deltaFreq << "," // column 1: the frequency
-                    << real(cnum) << ","                // column 2: real part of Hall the conductivity
-                    << imag(cnum) <<"\n";               // column 3: imaginary part of the Hall conductivity
-            counter++;
-        }
-
-        outFile.close();
-        std::cout << "\n\nHall conductivity data has been saved to " << fileName;
-    }
-    else // if the free energy optimisation did not succeed
+    if (!freeEnergyOutput.success) // if the free energy optimisation did not succeed
     {
         std::cout << "\n\nHall conductivity has not been calculated.";
+        return 0;
     }
+
+    // Calculate Hall conductivity as a function of frequency
+    HallParameters hparams {temp, Nk, Nf, deltaFreq, zeroPlus};    // set up parameters for the calculation
+    std::cout << "\n\nCalculating the Hall conductivity using the following parameters:\n\n\t" << hparams;
+    std::array<complexd,Nf> hall {};                               // initialize array to store the Hall conductivity
+    HallConductivity(hall, DeltaConversion(delta0optim), hparams); // note DeltaConversion() as OptimizeFreeEnergy() deals with unconverted variational params
+
+    // Name the file to write the data to
+    std::stringstream ss;
+    std::string fileName;
+    ss << "hall_" << hparams << ".csv";
+    ss >> fileName;
+
+    // Save data to file (file will be overwritten)
+    std::ofstream outFile {fileName};
+
+    if (!outFile)
+    {
+        std::cerr << fileName <<" could not be opened for writing";
+        return 1;
+    }
+    
+    int counter = 1;
+    for (complexd cnum : hall)
+    {
+        outFile << counter*hparams.deltaFreq << "," // column 1: the frequency
+                << real(cnum) << ","                // column 2: real part of Hall the conductivity
+                << imag(cnum) <<"\n";               // column 3: imaginary part of the Hall conductivity
+        counter++;
+    }
+
+    outFile.close();
+    std::cout << "\n\nHall conductivity data has been saved to " << fileName;
 
     return 0;
 }
