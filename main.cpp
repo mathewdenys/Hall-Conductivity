@@ -13,6 +13,7 @@
  * on the actual convergence criterion used in the termination condition (taken here to be 1e-6).
  */
 
+#define TIMING_CODE      // comment out to exclude timing code
 #define _USE_MATH_DEFINES   // access M_Pi in <cmath>
 #include <iostream>         // std::cout
 #include <iomanip>          // std::setw
@@ -30,6 +31,36 @@ using complexd = std::complex<double>;
 using Eigen::Matrix2cd;
 using Eigen::Matrix4cd;
 using Eigen::Vector4cd;
+
+#ifdef TIMING_CODE
+    #include <chrono> // for std::chrono functions
+ 
+    // The Timer class is taken from https://www.learncpp.com/cpp-tutorial/8-16-timing-your-code/
+    class Timer
+    {
+    private:
+        // Type aliases to make accessing nested type easier
+        using clock_t = std::chrono::high_resolution_clock;
+        using second_t = std::chrono::duration<double, std::ratio<1> >;
+        
+        std::chrono::time_point<clock_t> m_beg;
+    
+    public:
+        Timer() : m_beg(clock_t::now())
+        {
+        }
+        
+        void reset()
+        {
+            m_beg = clock_t::now();
+        }
+        
+        double elapsed() const
+        {
+            return std::chrono::duration_cast<second_t>(clock_t::now() - m_beg).count();
+        }
+    };
+#endif
 
 // Define parameters for the normal state
 const double t1  = 1.0;          // The first hopping parameter
@@ -475,11 +506,20 @@ void HallConductivity(std::array<complexd,Nf>& hallOut, const DeltaWrap& delta0o
 
 int main()
 {
+    #ifdef TIMING_CODE
+    Timer tTotal;
+    #endif
     // Determine optimal pairing potential at the given temperature
     DeltaWrap delta0optim{ 0.01, -0.01 }; // inital guess
     FreeEnergyParameters fparams { temp, Nk };
     std::cout << "\nOptimizing free energy using the following parameters:\n\n\t" << fparams;
+    #ifdef TIMING_CODE
+    Timer tOptimize;
+    #endif
     NMOutput freeEnergyOutput = OptimizeFreeEnergy(delta0optim, fparams);
+    #ifdef TIMING_CODE
+    std::cout << "\n\nTime to optimize free energy: " << tOptimize.elapsed() << "s";
+    #endif
     std::cout << freeEnergyOutput;
 
     if (!freeEnergyOutput.success) // if the free energy optimisation did not succeed
@@ -490,9 +530,15 @@ int main()
 
     // Calculate Hall conductivity as a function of frequency
     HallParameters hparams {temp, Nk, Nf, deltaFreq, zeroPlus};    // set up parameters for the calculation
-    std::cout << "\n\nCalculating the Hall conductivity using the following parameters:\n\n\t" << hparams;
+    std::cout << "\n\nCalculating the Hall conductivity using the following parameters:\n\n\t" << hparams << '\n';
     std::array<complexd,Nf> hall {};                               // initialize array to store the Hall conductivity
+    #ifdef TIMING_CODE
+    Timer tHall;
+    #endif
     HallConductivity(hall, DeltaConversion(delta0optim), hparams); // note DeltaConversion() as OptimizeFreeEnergy() deals with unconverted variational params
+    #ifdef TIMING_CODE
+    std::cout << "\nTime to calculate Hall conductivity: " << tHall.elapsed() << "s\n";
+    #endif
 
     // Name the file to write the data to
     std::stringstream ss;
@@ -519,7 +565,11 @@ int main()
     }
 
     outFile.close();
-    std::cout << "\n\nHall conductivity data has been saved to " << fileName;
+    std::cout << "\nHall conductivity data has been saved to " << fileName << '\n';
+
+    #ifdef TIMING_CODE
+    std::cout << "\nTotal time elapsed: " << tTotal.elapsed() << "s\n";
+    #endif
 
     return 0;
 }
